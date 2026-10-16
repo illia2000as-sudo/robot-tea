@@ -6,6 +6,9 @@ import threading
 import webbrowser
 import tkinter as tk
 
+import keyring
+from openai import OpenAI
+
 import customtkinter as ctk
 import pyttsx3
 import speech_recognition as sr
@@ -26,6 +29,8 @@ class RobotTeaApp(ctk.CTk):
         self.events = queue.Queue()
         self.listening = False
         self.engine_lock = threading.Lock()
+        self.ai_history = []
+        self.ai_busy = False
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -60,7 +65,12 @@ class RobotTeaApp(ctk.CTk):
             control, text="🎙 Слушать", width=150, height=42,
             command=self.toggle_listening, corner_radius=12
         )
-        self.listen_button.grid(row=0, column=1, sticky="e")
+        self.listen_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        self.ai_button = ctk.CTkButton(
+            control, text="⚙ Настроить ИИ", width=145, height=42,
+            command=self.configure_ai, corner_radius=12, fg_color="#263654"
+        )
+        self.ai_button.grid(row=0, column=2, sticky="e")
 
         body = ctk.CTkFrame(self, fg_color="#111a30", corner_radius=18)
         body.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="nsew")
@@ -77,14 +87,29 @@ class RobotTeaApp(ctk.CTk):
         self.log.grid(row=1, column=0, padx=14, pady=(0, 14), sticky="nsew")
         self.log.configure(state="disabled")
 
+        chatbar = ctk.CTkFrame(self, fg_color="transparent")
+        chatbar.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
+        chatbar.grid_columnconfigure(0, weight=1)
+        self.message_entry = ctk.CTkEntry(
+            chatbar, placeholder_text="Напиши вопрос ИИ…",
+            height=40, corner_radius=12
+        )
+        self.message_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.message_entry.bind("<Return>", lambda event: self.send_text_message())
+        ctk.CTkButton(
+            chatbar, text="Отправить", width=110, height=40,
+            command=self.send_text_message, corner_radius=12
+        ).grid(row=0, column=1, sticky="e")
+
         footer = ctk.CTkLabel(
             self,
             text="Примеры: «открой Steam», «открой браузер», «открой блокнот», «который час», «стоп».",
             text_color="#8292b3", wraplength=820
         )
-        footer.grid(row=3, column=0, padx=20, pady=(0, 14), sticky="ew")
+        footer.grid(row=4, column=0, padx=20, pady=(0, 14), sticky="ew")
 
         self.write_log("Robot Tea запущен. Голосовое распознавание использует интернет.")
+        self.write_log("Для диалога с ИИ нажми «Настроить ИИ» и добавь свой API-ключ.")
         self.after(100, self.process_events)
 
     def write_log(self, message):
@@ -189,7 +214,81 @@ class RobotTeaApp(ctk.CTk):
         elif not command:
             self.events.put(("log", "Пустая команда."))
         else:
-            self.respond("Пока я не знаю эту команду. Эту функцию добавим в следующем обновлении.")
+            self.ask_ai(spoken)
+
+
+    def configure_ai(self):
+        dialog = ctk.CTkInputDialog(
+            text="Вставь API-ключ OpenAI. Он сохранится в хранилище учётных данных Windows, а не в GitHub.",
+            title="Настройка Robot Tea AI"
+        )
+        api_key = dialog.get_input()
+        if not api_key:
+            return
+        api_key = api_key.strip()
+        if not api_key.startswith("sk-"):
+            self.respond("Ключ выглядит необычно. Проверь, что это API-ключ OpenAI.")
+            return
+        try:
+            keyring.set_password("RobotTea", "openai_api_key", api_key)
+            self.respond("Ключ сохранён в хранилище учётных данных Windows. Проверю подключение при первом вопросе.")
+        except Exception as exc:
+            self.events.put(("log", f"Не удалось сохранить ключ в хранилище Windows: {exc}"))
+            self.respond("Не удалось безопасно сохранить ключ. Проверь настройки Windows.")
+
+    def send_text_message(self):
+        message = self.message_entry.get().strip()
+        if not message:
+            return
+        self.message_entry.delete(0, "end")
+        self.events.put(("log", f"Ты: {message}"))
+        self.ask_ai(message)
+
+    def ask_ai(self, message):
+        if self.ai_busy:
+            self.events.put(("log", "ИИ ещё готовит ответ. Подожди немного."))
+            return
+        api_key = keyring.get_password("RobotTea", "openai_api_key")
+        if not api_key:
+            self.events.put(("status", "Сначала нажми «Настроить ИИ» и добавь API-ключ OpenAI."))
+            self.events.put(("log", "ИИ не настроен. Ключ не хранится в репозитории."))
+            self.speak("Сначала настрой подключение к искусственному интеллекту.")
+            return
+        self.ai_busy = True
+        self.events.put(("status", "ИИ думает…"))
+        threading.Thread(target=self._ask_ai_worker, args=(api_key, message), daemon=True).start()
+
+    def _ask_ai_worker(self, api_key, message):
+        try:
+            client = OpenAI(api_key=api_key, timeout=45.0, max_retries=1)
+            history = self.ai_history[-12:] + [{"role": "user", "content": message}]
+            response = client.responses.create(
+                model="gpt-4.1-mini",
+                instructions=(
+                    "Ты — Robot Tea, дружелюбный голосовой помощник для Windows. "
+                    "Отвечай по-русски, понятно и кратко. Помогай с вопросами и компьютером, "
+                    "но не утверждай, что выполнил действие Windows, если программа его фактически не выполнила. "
+                    "Не проси пользователя раскрывать пароли или секретные ключи."
+                ),
+                input=history,
+                max_output_tokens=500,
+            )
+            answer = (response.output_text or "").strip()
+            if not answer:
+                answer = "Не получилось сформировать ответ. Попробуй ещё раз."
+            self.ai_history.extend([
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": answer},
+            ])
+            self.ai_history = self.ai_history[-12:]
+            self.events.put(("log", f"Robot Tea AI: {answer}"))
+            self.events.put(("status", answer[:180]))
+            self.speak(answer)
+        except Exception as exc:
+            self.events.put(("log", f"Ошибка ИИ: {exc}"))
+            self.events.put(("status", "ИИ не ответил. Проверь интернет, API-ключ и доступ к API."))
+        finally:
+            self.ai_busy = False
 
     def launch_app(self, label, candidates):
         for path in candidates:
