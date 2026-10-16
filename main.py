@@ -2,6 +2,8 @@ import ctypes
 import datetime
 import os
 import queue
+import shutil
+import json
 import subprocess
 import threading
 import webbrowser
@@ -333,6 +335,12 @@ class RobotTeaApp(ctk.CTk):
             self.respond(f"Сейчас {now}.")
         elif "открой" in command and ("проводник" in command or "файлы" in command):
             self.launch_command("Проводник", ["explorer.exe"])
+        elif command.startswith("открой "):
+            app_name = command[len("открой "):].strip(" .,!?")
+            if app_name:
+                self.launch_named_app(app_name)
+            else:
+                self.respond("Скажи название приложения, например: «открой Discord».")
         elif command in ("привет", "здравствуй", "привет робот чай"):
             self.respond("Привет! Я готов помочь.")
         elif not command:
@@ -432,6 +440,71 @@ class RobotTeaApp(ctk.CTk):
         except OSError as exc:
             self.respond(f"Не удалось открыть {label}.")
             self.events.put(("log", str(exc)))
+
+    def launch_named_app(self, app_name):
+        """Launch an installed Windows app by its Start-menu name, without shell command interpolation."""
+        aliases = {
+            "диспетчер задач": ["taskmgr.exe"],
+            "командная строка": ["cmd.exe"],
+            "powershell": ["powershell.exe"],
+            "терминал": ["wt.exe", "WindowsTerminal.exe"],
+            "paint": ["mspaint.exe"],
+            "паинт": ["mspaint.exe"],
+            "word": ["winword.exe"],
+            "ворд": ["winword.exe"],
+            "excel": ["excel.exe"],
+            "эксель": ["excel.exe"],
+            "discord": ["Discord.exe"],
+            "дискорд": ["Discord.exe"],
+            "telegram": ["Telegram.exe"],
+            "телеграм": ["Telegram.exe"],
+            "spotify": ["Spotify.exe"],
+            "спотифай": ["Spotify.exe"],
+            "steam": ["steam.exe"],
+            "стим": ["steam.exe"],
+        }
+        try:
+            # First try Windows registered Start-menu apps (including many packaged apps).
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=12, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            if completed.returncode == 0 and completed.stdout.strip():
+                apps = json.loads(completed.stdout)
+                if isinstance(apps, dict):
+                    apps = [apps]
+                target = app_name.casefold()
+                valid = [a for a in apps if isinstance(a, dict) and a.get("Name") and a.get("AppID")]
+                exact = [a for a in valid if a["Name"].casefold() == target]
+                partial = [a for a in valid if target in a["Name"].casefold()]
+                matches = exact or partial
+                if matches:
+                    chosen = matches[0]
+                    os.startfile("shell:AppsFolder\\" + chosen["AppID"])
+                    self.respond(f"Открываю {chosen['Name']}.")
+                    if len(matches) > 1 and not exact:
+                        self.events.put(("log", "Найдено несколько похожих приложений; открыто первое совпадение."))
+                    return
+        except Exception as exc:
+            self.events.put(("log", f"Поиск приложений Windows не удался: {exc}"))
+
+        # Fallback for common classic desktop applications.
+        candidates = aliases.get(app_name.casefold(), [app_name])
+        for candidate in candidates:
+            executable = shutil.which(candidate)
+            if executable:
+                try:
+                    subprocess.Popen([executable], shell=False)
+                    self.respond(f"Открываю {app_name}.")
+                    return
+                except OSError as exc:
+                    self.events.put(("log", f"Не удалось запустить {candidate}: {exc}"))
+        self.respond(
+            f"Не нашёл приложение «{app_name}» в меню Пуск. "
+            "Проверь название или попробуй открыть его через меню Пуск Windows."
+        )
 
     def open_minecraft(self):
         # Launcher URIs vary by installation; use the official Minecraft launcher URI.
