@@ -316,7 +316,25 @@ class RobotTeaApp(ctk.CTk):
         if any(phrase in command for phrase in ("останови движение мыши", "выключи движение мыши")):
             self.disable_mouse_nudge()
             return
-        if "steam" in command or "стим" in command:
+        if command.startswith("открой сайт "):
+            self.open_website(command[len("открой сайт "):].strip(" .,!?"))
+        elif command in ("открой ютуб", "открой youtube", "ютуб", "youtube"):
+            self.open_website("youtube.com")
+        elif command in ("открой гугл", "открой google", "гугл", "google"):
+            self.open_website("google.com")
+        elif command in ("открой чатгпт", "открой chatgpt", "открой chat gpt"):
+            self.open_website("chatgpt.com")
+        elif command in ("открой github", "открой гитхаб"):
+            self.open_website("github.com")
+        elif command in ("открой загрузки", "открой папку загрузки", "папка загрузки"):
+            self.open_folder("Загрузки", os.path.join(os.path.expanduser("~"), "Downloads"))
+        elif command in ("открой рабочий стол", "покажи рабочий стол"):
+            self.open_folder("Рабочий стол", os.path.join(os.path.expanduser("~"), "Desktop"))
+        elif command in ("открой документы", "открой папку документы"):
+            self.open_folder("Документы", os.path.join(os.path.expanduser("~"), "Documents"))
+        elif command in ("открой настройки", "открой параметры windows", "настройки windows"):
+            self.open_windows_settings()
+        elif "steam" in command or "стим" in command:
             self.launch_app("Steam", [
                 os.path.expandvars(r"%ProgramFiles(x86)%\\Steam\\steam.exe"),
                 os.path.expandvars(r"%ProgramFiles%\\Steam\\steam.exe"),
@@ -325,9 +343,9 @@ class RobotTeaApp(ctk.CTk):
             self.open_minecraft()
         elif "блокнот" in command or "notepad" in command:
             self.launch_command("Блокнот", ["notepad.exe"])
-        elif "калькулятор" in command or "калькулятор" in command:
+        elif "калькулятор" in command:
             self.launch_command("Калькулятор", ["calc.exe"])
-        elif "браузер" in command or "интернет" in command or "сайт" in command:
+        elif "браузер" in command or "интернет" in command:
             webbrowser.open("https://www.google.com")
             self.respond("Открываю браузер.")
         elif "который час" in command or "время" in command:
@@ -397,32 +415,15 @@ class RobotTeaApp(ctk.CTk):
         try:
             client = OpenAI(api_key=api_key, timeout=45.0, max_retries=1)
             history = self.ai_history[-12:] + [{"role": "user", "content": message}]
-            rust_terms = (
-                "rust", "раст", "калаша", "калаш", "радиаци", "рт", "монумент",
-                "учен", "ботов", "ресурс", "сколько металла", "верстак", "нефтян",
-                "карго", "пусковая площадка", "launch site", "airfield", "military tunnels"
-            )
-            rust_mode = any(term in message.casefold() for term in rust_terms)
-            base_instructions = (
-                "Ты — Robot Tea, дружелюбный голосовой помощник для Windows. "
-                "Отвечай по-русски, понятно и кратко. Помогай с вопросами и компьютером, "
-                "но не утверждай, что выполнил действие Windows, если программа его фактически не выполнила. "
-                "Не проси пользователя раскрывать пароли или секретные ключи."
-            )
-            rust_instructions = (
-                " Пользователь спрашивает об игре Rust (PC survival от Facepunch). "
-                "Работай как справочник по Rust: рецепты крафта и ресурсы, уровни верстака, "
-                "защита от радиации, монументы (РТ), учёные/NPC, лут и подготовка к вылазкам. "
-                "Отвечай практично, списками и с точными количествами, если уверен. "
-                "Не путай Rust с Minecraft. Уточняй, какой именно монумент/РТ имеется в виду, "
-                "если число учёных или требования к радиации зависят от места. "
-                "Не выдумывай точные цифры: если сведения могут измениться после обновления игры "
-                "или зависят от сервера, прямо укажи это и отдели стандартный Rust от модифицированных серверов. "
-                "Если вопрос неоднозначен, задай один короткий уточняющий вопрос."
-            ) if rust_mode else ""
             response = client.responses.create(
                 model="gpt-4.1-mini",
-                instructions=base_instructions + rust_instructions,
+                instructions=(
+                    "Ты — Robot Tea, дружелюбный помощник для Windows. "
+                    "Отвечай по-русски, понятно и практично. Для задач на компьютере сначала "
+                    "предлагай конкретные шаги или команды, а не общие рассуждения. "
+                    "Не утверждай, что выполнил действие Windows, если программа его фактически не выполнила. "
+                    "Не проси пользователя раскрывать пароли или секретные ключи."
+                ),
                 input=history,
                 max_output_tokens=650,
             )
@@ -442,6 +443,61 @@ class RobotTeaApp(ctk.CTk):
             self.events.put(("status", "ИИ не ответил. Проверь интернет, API-ключ и доступ к API."))
         finally:
             self.ai_busy = False
+
+    def open_website(self, address):
+        """Open a user-requested website safely in the default browser."""
+        if not address:
+            self.respond("Назови сайт, например: «открой сайт youtube.com».")
+            return
+        address = address.strip()
+        if "://" not in address:
+            address = "https://" + address
+        from urllib.parse import urlparse
+        parsed = urlparse(address)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            self.respond("Не понял адрес сайта. Назови домен, например github.com.")
+            return
+        try:
+            opened = webbrowser.open(address)
+            if opened:
+                self.respond(f"Открываю сайт {parsed.netloc}.")
+            else:
+                self.respond("Не удалось передать ссылку браузеру. Проверь браузер по умолчанию.")
+        except Exception as exc:
+            self.events.put(("log", f"Ошибка открытия сайта: {exc}"))
+            self.respond("Не получилось открыть этот сайт.")
+
+    def open_folder(self, label, path):
+        if os.name != "nt":
+            self.respond("Открытие папок этим способом доступно в Windows.")
+            return
+        try:
+            if not os.path.isdir(path):
+                # Windows localised folder names can differ; Explorer resolves shell locations.
+                shell_names = {"Загрузки": "shell:Downloads", "Рабочий стол": "shell:Desktop", "Документы": "shell:Personal"}
+                target = shell_names.get(label)
+                if target:
+                    os.startfile(target)
+                    self.respond(f"Открываю папку «{label}».")
+                    return
+                self.respond(f"Не нашёл папку «{label}».")
+                return
+            os.startfile(path)
+            self.respond(f"Открываю папку «{label}».")
+        except OSError as exc:
+            self.events.put(("log", f"Ошибка открытия папки {label}: {exc}"))
+            self.respond(f"Не удалось открыть папку «{label}».")
+
+    def open_windows_settings(self):
+        if os.name != "nt":
+            self.respond("Настройки Windows доступны только в Windows.")
+            return
+        try:
+            os.startfile("ms-settings:")
+            self.respond("Открываю настройки Windows.")
+        except OSError as exc:
+            self.events.put(("log", f"Ошибка открытия настроек: {exc}"))
+            self.respond("Не удалось открыть настройки Windows.")
 
     def launch_app(self, label, candidates):
         for path in candidates:
