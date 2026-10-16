@@ -1,0 +1,247 @@
+import datetime
+import os
+import queue
+import subprocess
+import threading
+import webbrowser
+import tkinter as tk
+
+import customtkinter as ctk
+import pyttsx3
+import speech_recognition as sr
+
+
+APP_NAME = "Robot Tea"
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+
+class RobotTeaApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Robot Tea — голосовой помощник")
+        self.geometry("900x620")
+        self.minsize(760, 540)
+        self.configure(fg_color="#0b1020")
+        self.events = queue.Queue()
+        self.listening = False
+        self.engine_lock = threading.Lock()
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(self, fg_color="#111a30", corner_radius=18)
+        header.grid(row=0, column=0, padx=20, pady=(20, 12), sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
+
+        self.orb = ctk.CTkLabel(
+            header, text="◉", font=ctk.CTkFont(size=52, weight="bold"),
+            text_color="#63d7ff", width=100
+        )
+        self.orb.grid(row=0, column=0, rowspan=2, padx=(18, 8), pady=14)
+        ctk.CTkLabel(
+            header, text="ROBOT TEA",
+            font=ctk.CTkFont(size=28, weight="bold"), text_color="#f2f7ff"
+        ).grid(row=0, column=1, sticky="sw", padx=8, pady=(18, 0))
+        ctk.CTkLabel(
+            header, text="Голосовой помощник для Windows",
+            font=ctk.CTkFont(size=14), text_color="#9eacc8"
+        ).grid(row=1, column=1, sticky="nw", padx=8, pady=(0, 18))
+
+        control = ctk.CTkFrame(self, fg_color="transparent")
+        control.grid(row=1, column=0, padx=20, pady=(0, 12), sticky="ew")
+        control.grid_columnconfigure(0, weight=1)
+        self.status = ctk.CTkLabel(
+            control, text="Система готова. Нажми «Слушать» и произнеси команду.",
+            text_color="#b8c8e8", anchor="w", wraplength=560
+        )
+        self.status.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        self.listen_button = ctk.CTkButton(
+            control, text="🎙 Слушать", width=150, height=42,
+            command=self.toggle_listening, corner_radius=12
+        )
+        self.listen_button.grid(row=0, column=1, sticky="e")
+
+        body = ctk.CTkFrame(self, fg_color="#111a30", corner_radius=18)
+        body.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="nsew")
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            body, text="Журнал помощника",
+            font=ctk.CTkFont(size=18, weight="bold"), anchor="w"
+        ).grid(row=0, column=0, padx=16, pady=(14, 6), sticky="ew")
+        self.log = ctk.CTkTextbox(
+            body, corner_radius=12, fg_color="#0b1020",
+            text_color="#dce8ff", font=ctk.CTkFont(size=13), wrap="word"
+        )
+        self.log.grid(row=1, column=0, padx=14, pady=(0, 14), sticky="nsew")
+        self.log.configure(state="disabled")
+
+        footer = ctk.CTkLabel(
+            self,
+            text="Примеры: «открой Steam», «открой браузер», «открой блокнот», «который час», «стоп».",
+            text_color="#8292b3", wraplength=820
+        )
+        footer.grid(row=3, column=0, padx=20, pady=(0, 14), sticky="ew")
+
+        self.write_log("Robot Tea запущен. Голосовое распознавание использует интернет.")
+        self.after(100, self.process_events)
+
+    def write_log(self, message):
+        self.log.configure(state="normal")
+        self.log.insert("end", message + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def set_status(self, message):
+        self.status.configure(text=message)
+
+    def toggle_listening(self):
+        if self.listening:
+            self.listening = False
+            self.listen_button.configure(text="🎙 Слушать")
+            self.set_status("Прослушивание остановлено.")
+            return
+        self.listening = True
+        self.listen_button.configure(text="■ Остановить")
+        self.set_status("Слушаю… говори после сигнала готовности.")
+        threading.Thread(target=self.listen_loop, daemon=True).start()
+
+    def listen_loop(self):
+        recognizer = sr.Recognizer()
+        try:
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.6)
+                while self.listening:
+                    self.events.put(("status", "Слушаю команду…"))
+                    try:
+                        audio = recognizer.listen(source, timeout=4, phrase_time_limit=7)
+                    except sr.WaitTimeoutError:
+                        continue
+                    if not self.listening:
+                        break
+                    self.events.put(("status", "Распознаю речь…"))
+                    try:
+                        text = recognizer.recognize_google(audio, language="ru-RU")
+                    except sr.UnknownValueError:
+                        self.events.put(("log", "Не удалось разобрать фразу. Попробуй ещё раз."))
+                        continue
+                    except sr.RequestError:
+                        self.events.put(("log", "Не удалось подключиться к распознаванию речи. Проверь интернет."))
+                        self.events.put(("status", "Ошибка распознавания: проверь интернет."))
+                        break
+                    self.events.put(("heard", text))
+                    self.handle_command(text)
+        except (OSError, AttributeError) as exc:
+            self.events.put(("log", f"Не удалось открыть микрофон: {exc}"))
+            self.events.put(("status", "Проверь подключение и разрешения микрофона."))
+        except Exception as exc:
+            self.events.put(("log", f"Ошибка микрофона: {exc}"))
+            self.events.put(("status", "Не удалось запустить микрофон."))
+        finally:
+            self.listening = False
+            self.events.put(("button", "🎙 Слушать"))
+
+    def speak(self, text):
+        def worker():
+            try:
+                with self.engine_lock:
+                    engine = pyttsx3.init()
+                    engine.setProperty("rate", 178)
+                    engine.say(text)
+                    engine.runAndWait()
+                    engine.stop()
+            except Exception as exc:
+                self.events.put(("log", f"Голосовой ответ недоступен: {exc}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def handle_command(self, spoken):
+        command = spoken.lower().strip()
+        if command.startswith("робот чай"):
+            command = command[len("робот чай"):].strip(" ,.!?")
+        self.events.put(("log", f"Ты: {spoken}"))
+
+        if any(word in command for word in ("стоп", "остановись", "хватит слушать")):
+            self.listening = False
+            self.speak("Хорошо, прекращаю прослушивание.")
+            return
+        if "steam" in command or "стим" in command:
+            self.launch_app("Steam", [
+                os.path.expandvars(r"%ProgramFiles(x86)%\\Steam\\steam.exe"),
+                os.path.expandvars(r"%ProgramFiles%\\Steam\\steam.exe"),
+            ])
+        elif "minecraft" in command or "майнкрафт" in command:
+            self.open_minecraft()
+        elif "блокнот" in command or "notepad" in command:
+            self.launch_command("Блокнот", ["notepad.exe"])
+        elif "калькулятор" in command or "калькулятор" in command:
+            self.launch_command("Калькулятор", ["calc.exe"])
+        elif "браузер" in command or "интернет" in command or "сайт" in command:
+            webbrowser.open("https://www.google.com")
+            self.respond("Открываю браузер.")
+        elif "который час" in command or "время" in command:
+            now = datetime.datetime.now().strftime("%H:%M")
+            self.respond(f"Сейчас {now}.")
+        elif "открой" in command and ("проводник" in command or "файлы" in command):
+            self.launch_command("Проводник", ["explorer.exe"])
+        elif command in ("привет", "здравствуй", "привет робот чай"):
+            self.respond("Привет! Я готов помочь.")
+        elif not command:
+            self.events.put(("log", "Пустая команда."))
+        else:
+            self.respond("Пока я не знаю эту команду. Эту функцию добавим в следующем обновлении.")
+
+    def launch_app(self, label, candidates):
+        for path in candidates:
+            if path and os.path.isfile(path):
+                try:
+                    os.startfile(path)
+                    self.respond(f"Запускаю {label}.")
+                    return
+                except OSError:
+                    pass
+        self.respond(f"{label} не найден. Проверь, установлен ли он.")
+
+    def launch_command(self, label, command):
+        try:
+            subprocess.Popen(command, shell=False)
+            self.respond(f"Открываю: {label}.")
+        except OSError as exc:
+            self.respond(f"Не удалось открыть {label}.")
+            self.events.put(("log", str(exc)))
+
+    def open_minecraft(self):
+        # Launcher URIs vary by installation; use the official Minecraft launcher URI.
+        try:
+            os.startfile("minecraft://")
+            self.respond("Пробую открыть Minecraft Launcher.")
+        except OSError:
+            self.respond("Не удалось открыть Minecraft Launcher. Запусти его один раз вручную.")
+
+    def respond(self, message):
+        self.events.put(("log", f"Robot Tea: {message}"))
+        self.events.put(("status", message))
+        self.speak(message)
+
+    def process_events(self):
+        try:
+            while True:
+                kind, value = self.events.get_nowait()
+                if kind == "log":
+                    self.write_log(value)
+                elif kind == "status":
+                    self.set_status(value)
+                elif kind == "heard":
+                    self.orb.configure(text="◉", text_color="#8bffcf")
+                    self.write_log(f"Распознано: {value}")
+                elif kind == "button":
+                    self.listen_button.configure(text=value)
+                    self.orb.configure(text="◉", text_color="#63d7ff")
+        except queue.Empty:
+            pass
+        self.after(100, self.process_events)
+
+
+if __name__ == "__main__":
+    app = RobotTeaApp()
+    app.mainloop()
