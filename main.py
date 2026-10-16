@@ -373,6 +373,9 @@ class RobotTeaApp(ctk.CTk):
         if not message:
             return
         self.message_entry.delete(0, "end")
+        if message.lower().startswith("открой "):
+            self.handle_command(message)
+            return
         self.events.put(("log", f"Ты: {message}"))
         self.ask_ai(message)
 
