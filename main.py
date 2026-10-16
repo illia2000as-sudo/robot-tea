@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import os
 import queue
@@ -31,6 +32,9 @@ class RobotTeaApp(ctk.CTk):
         self.engine_lock = threading.Lock()
         self.ai_history = []
         self.ai_busy = False
+        self.keep_awake = False
+        self.mouse_nudge_active = False
+        self.mouse_nudge_job = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -101,16 +105,121 @@ class RobotTeaApp(ctk.CTk):
             command=self.send_text_message, corner_radius=12
         ).grid(row=0, column=1, sticky="e")
 
-        footer = ctk.CTkLabel(
-            self,
-            text="Примеры: «открой Steam», «открой браузер», «открой блокнот», «который час», «стоп».",
-            text_color="#8292b3", wraplength=820
+        automation = ctk.CTkFrame(self, fg_color="transparent")
+        automation.grid(row=4, column=0, padx=20, pady=(0, 8), sticky="ew")
+        automation.grid_columnconfigure((0, 1), weight=1)
+        self.awake_button = ctk.CTkButton(
+            automation, text="🌙 Не засыпать: выкл.", height=38,
+            command=self.toggle_keep_awake, corner_radius=10, fg_color="#263654"
         )
-        footer.grid(row=4, column=0, padx=20, pady=(0, 14), sticky="ew")
+        self.awake_button.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        self.mouse_button = ctk.CTkButton(
+            automation, text="🖱 Двигать мышью: выкл.", height=38,
+            command=self.toggle_mouse_nudge, corner_radius=10, fg_color="#263654"
+        )
+        self.mouse_button.grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        ctk.CTkLabel(
+            self,
+            text="Голосовые команды: «не засыпай», «двигай мышкой каждую минуту», «останови автоматизацию».",
+            text_color="#8292b3", wraplength=820
+        ).grid(row=5, column=0, padx=20, pady=(0, 12), sticky="ew")
 
         self.write_log("Robot Tea запущен. Голосовое распознавание использует интернет.")
         self.write_log("Для диалога с ИИ нажми «Настроить ИИ» и добавь свой API-ключ.")
         self.after(100, self.process_events)
+
+    def toggle_keep_awake(self):
+        if self.keep_awake:
+            self.disable_keep_awake()
+        else:
+            self.enable_keep_awake()
+
+    def enable_keep_awake(self):
+        if os.name != "nt":
+            self.respond("Защита от сна доступна только в Windows.")
+            return
+        try:
+            # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+            result = ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001 | 0x00000002)
+            if result == 0:
+                raise OSError("Windows не приняла запрос предотвращения сна")
+            self.keep_awake = True
+            self.awake_button.configure(text="🌙 Не засыпать: вкл.", fg_color="#176b55")
+            self.respond("Автоматический сон и выключение экрана временно запрещены, пока режим включён.")
+        except Exception as exc:
+            self.events.put(("log", f"Не удалось включить защиту от сна: {exc}"))
+            self.respond("Не удалось включить защиту от сна Windows.")
+
+    def disable_keep_awake(self):
+        try:
+            if os.name == "nt":
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        except Exception as exc:
+            self.events.put(("log", f"Не удалось снять защиту от сна: {exc}"))
+        self.keep_awake = False
+        if hasattr(self, "awake_button"):
+            self.awake_button.configure(text="🌙 Не засыпать: выкл.", fg_color="#263654")
+        self.events.put(("status", "Автоматическая политика сна Windows восстановлена."))
+
+    def toggle_mouse_nudge(self):
+        if self.mouse_nudge_active:
+            self.disable_mouse_nudge()
+        else:
+            self.enable_mouse_nudge()
+
+    def enable_mouse_nudge(self):
+        if os.name != "nt":
+            self.respond("Периодическое движение мыши доступно только в Windows.")
+            return
+        if self.mouse_nudge_active:
+            self.respond("Периодическое движение мыши уже включено.")
+            return
+        self.mouse_nudge_active = True
+        self.mouse_button.configure(text="🖱 Двигать мышью: вкл.", fg_color="#176b55")
+        self.events.put(("log", "Движение мыши включено: небольшое смещение раз в 60 секунд. Это не гарантирует, что игра сочтёт персонажа активным."))
+        self.events.put(("status", "Мышь будет немного смещаться раз в минуту."))
+        self.mouse_nudge_job = self.after(60000, self._mouse_nudge_tick)
+
+    def _mouse_nudge_tick(self):
+        self.mouse_nudge_job = None
+        if not self.mouse_nudge_active:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            point = POINT()
+            if user32.GetCursorPos(ctypes.byref(point)):
+                screen_w = user32.GetSystemMetrics(0)
+                screen_h = user32.GetSystemMetrics(1)
+                new_x = point.x + 2 if point.x + 2 < screen_w else max(0, point.x - 2)
+                user32.SetCursorPos(new_x, point.y)
+                self.after(150, lambda x=point.x, y=point.y: user32.SetCursorPos(x, y) if self.mouse_nudge_active else None)
+        except Exception as exc:
+            self.events.put(("log", f"Ошибка движения мыши: {exc}"))
+        if self.mouse_nudge_active:
+            self.mouse_nudge_job = self.after(60000, self._mouse_nudge_tick)
+
+    def disable_mouse_nudge(self):
+        self.mouse_nudge_active = False
+        if self.mouse_nudge_job is not None:
+            try:
+                self.after_cancel(self.mouse_nudge_job)
+            except Exception:
+                pass
+            self.mouse_nudge_job = None
+        if hasattr(self, "mouse_button"):
+            self.mouse_button.configure(text="🖱 Двигать мышью: выкл.", fg_color="#263654")
+        self.events.put(("status", "Периодическое движение мыши остановлено."))
+
+    def stop_automation(self):
+        self.disable_mouse_nudge()
+        self.disable_keep_awake()
+
+    def on_close(self):
+        self.listening = False
+        self.stop_automation()
+        self.destroy()
 
     def write_log(self, message):
         self.log.configure(state="normal")
@@ -186,9 +295,25 @@ class RobotTeaApp(ctk.CTk):
             command = command[len("робот чай"):].strip(" ,.!?")
         self.events.put(("log", f"Ты: {spoken}"))
 
+        if any(phrase in command for phrase in ("останови автоматизацию", "выключи автоматизацию", "останови все режимы")):
+            self.stop_automation()
+            self.respond("Автоматизация остановлена.")
+            return
         if any(word in command for word in ("стоп", "остановись", "хватит слушать")):
             self.listening = False
             self.speak("Хорошо, прекращаю прослушивание.")
+            return
+        if any(phrase in command for phrase in ("не засыпай", "не дай уснуть", "не переходи в сон", "не выключай компьютер")):
+            self.enable_keep_awake()
+            return
+        if any(phrase in command for phrase in ("двигай мышкой каждую минуту", "двигай мышью каждую минуту", "включи движение мыши", "мышка каждую минуту")):
+            self.enable_mouse_nudge()
+            return
+        if any(phrase in command for phrase in ("выключи защиту от сна", "разреши сон", "можно засыпать")):
+            self.disable_keep_awake()
+            return
+        if any(phrase in command for phrase in ("останови движение мыши", "выключи движение мыши")):
+            self.disable_mouse_nudge()
             return
         if "steam" in command or "стим" in command:
             self.launch_app("Steam", [
@@ -343,4 +468,5 @@ class RobotTeaApp(ctk.CTk):
 
 if __name__ == "__main__":
     app = RobotTeaApp()
+    app.protocol("WM_DELETE_WINDOW", app.on_close)
     app.mainloop()
