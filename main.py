@@ -144,7 +144,7 @@ class RobotTeaApp(ctk.CTk):
             if result == 0:
                 raise OSError("Windows не приняла запрос предотвращения сна")
             self.keep_awake = True
-            self.awake_button.configure(text="🌙 Не засыпать: вкл.", fg_color="#176b55")
+            self.events.put(("awake_button", True))
             self.respond("Автоматический сон и выключение экрана временно запрещены, пока режим включён.")
         except Exception as exc:
             self.events.put(("log", f"Не удалось включить защиту от сна: {exc}"))
@@ -157,8 +157,7 @@ class RobotTeaApp(ctk.CTk):
         except Exception as exc:
             self.events.put(("log", f"Не удалось снять защиту от сна: {exc}"))
         self.keep_awake = False
-        if hasattr(self, "awake_button"):
-            self.awake_button.configure(text="🌙 Не засыпать: выкл.", fg_color="#263654")
+        self.events.put(("awake_button", False))
         self.events.put(("status", "Автоматическая политика сна Windows восстановлена."))
 
     def toggle_mouse_nudge(self):
@@ -175,10 +174,10 @@ class RobotTeaApp(ctk.CTk):
             self.respond("Периодическое движение мыши уже включено.")
             return
         self.mouse_nudge_active = True
-        self.mouse_button.configure(text="🖱 Двигать мышью: вкл.", fg_color="#176b55")
+        self.events.put(("mouse_button", True))
         self.events.put(("log", "Движение мыши включено: небольшое смещение раз в 60 секунд. Это не гарантирует, что игра сочтёт персонажа активным."))
         self.events.put(("status", "Мышь будет немного смещаться раз в минуту."))
-        self.mouse_nudge_job = self.after(60000, self._mouse_nudge_tick)
+        self.events.put(("start_mouse_timer", None))
 
     def _mouse_nudge_tick(self):
         self.mouse_nudge_job = None
@@ -202,14 +201,8 @@ class RobotTeaApp(ctk.CTk):
 
     def disable_mouse_nudge(self):
         self.mouse_nudge_active = False
-        if self.mouse_nudge_job is not None:
-            try:
-                self.after_cancel(self.mouse_nudge_job)
-            except Exception:
-                pass
-            self.mouse_nudge_job = None
-        if hasattr(self, "mouse_button"):
-            self.mouse_button.configure(text="🖱 Двигать мышью: выкл.", fg_color="#263654")
+        self.events.put(("stop_mouse_timer", None))
+        self.events.put(("mouse_button", False))
         self.events.put(("status", "Периодическое движение мыши остановлено."))
 
     def stop_automation(self):
@@ -461,6 +454,26 @@ class RobotTeaApp(ctk.CTk):
                 elif kind == "button":
                     self.listen_button.configure(text=value)
                     self.orb.configure(text="◉", text_color="#63d7ff")
+                elif kind == "awake_button":
+                    if value:
+                        self.awake_button.configure(text="🌙 Не засыпать: вкл.", fg_color="#176b55")
+                    else:
+                        self.awake_button.configure(text="🌙 Не засыпать: выкл.", fg_color="#263654")
+                elif kind == "mouse_button":
+                    if value:
+                        self.mouse_button.configure(text="🖱 Двигать мышью: вкл.", fg_color="#176b55")
+                    else:
+                        self.mouse_button.configure(text="🖱 Двигать мышью: выкл.", fg_color="#263654")
+                elif kind == "start_mouse_timer":
+                    if self.mouse_nudge_active and self.mouse_nudge_job is None:
+                        self.mouse_nudge_job = self.after(60000, self._mouse_nudge_tick)
+                elif kind == "stop_mouse_timer":
+                    if self.mouse_nudge_job is not None:
+                        try:
+                            self.after_cancel(self.mouse_nudge_job)
+                        except Exception:
+                            pass
+                        self.mouse_nudge_job = None
         except queue.Empty:
             pass
         self.after(100, self.process_events)
