@@ -135,6 +135,9 @@ class RobotTeaApp(ctk.CTk):
             self.enable_keep_awake()
 
     def enable_keep_awake(self):
+        if threading.current_thread() is not threading.main_thread():
+            self.events.put(("automation_call", "enable_keep_awake"))
+            return
         if os.name != "nt":
             self.respond("Защита от сна доступна только в Windows.")
             return
@@ -151,6 +154,9 @@ class RobotTeaApp(ctk.CTk):
             self.respond("Не удалось включить защиту от сна Windows.")
 
     def disable_keep_awake(self):
+        if threading.current_thread() is not threading.main_thread():
+            self.events.put(("automation_call", "disable_keep_awake"))
+            return
         try:
             if os.name == "nt":
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
@@ -464,6 +470,11 @@ class RobotTeaApp(ctk.CTk):
                         self.mouse_button.configure(text="🖱 Двигать мышью: вкл.", fg_color="#176b55")
                     else:
                         self.mouse_button.configure(text="🖱 Двигать мышью: выкл.", fg_color="#263654")
+                elif kind == "automation_call":
+                    if value == "enable_keep_awake":
+                        self.enable_keep_awake()
+                    elif value == "disable_keep_awake":
+                        self.disable_keep_awake()
                 elif kind == "start_mouse_timer":
                     if self.mouse_nudge_active and self.mouse_nudge_job is None:
                         self.mouse_nudge_job = self.after(60000, self._mouse_nudge_tick)
