@@ -16,6 +16,8 @@ import customtkinter as ctk
 import pyttsx3
 import speech_recognition as sr
 
+from windows_tools import create_folder, find_files, system_report, take_screenshot
+
 
 APP_NAME = "Robot Tea"
 ctk.set_appearance_mode("dark")
@@ -316,6 +318,20 @@ class RobotTeaApp(ctk.CTk):
         if any(phrase in command for phrase in ("останови движение мыши", "выключи движение мыши")):
             self.disable_mouse_nudge()
             return
+        if command.startswith("найди файл "):
+            query = command[len("найди файл "):].strip(" .,!?")
+            self.search_files(query)
+            return
+        if command.startswith("создай папку "):
+            name = command[len("создай папку "):].strip(" .,!?")
+            self.create_user_folder(name)
+            return
+        if command in ("сделай скриншот", "сделай снимок экрана", "скриншот экрана", "сохрани скриншот"):
+            self.make_screenshot()
+            return
+        if command in ("состояние компьютера", "покажи состояние компьютера", "информация о компьютере", "характеристики компьютера"):
+            self.show_system_report()
+            return
         if command.startswith("открой сайт "):
             self.open_website(command[len("открой сайт "):].strip(" .,!?"))
         elif command in ("открой ютуб", "открой youtube", "ютуб", "youtube"):
@@ -391,7 +407,8 @@ class RobotTeaApp(ctk.CTk):
         if not message:
             return
         self.message_entry.delete(0, "end")
-        if message.lower().startswith("открой "):
+        command_prefixes = ("открой ", "найди файл ", "создай папку ", "сделай скриншот", "сделай снимок экрана", "скриншот экрана", "сохрани скриншот", "состояние компьютера", "покажи состояние компьютера", "информация о компьютере", "характеристики компьютера")
+        if message.lower().startswith(command_prefixes):
             self.handle_command(message)
             return
         self.events.put(("log", f"Ты: {message}"))
@@ -443,6 +460,47 @@ class RobotTeaApp(ctk.CTk):
             self.events.put(("status", "ИИ не ответил. Проверь интернет, API-ключ и доступ к API."))
         finally:
             self.ai_busy = False
+
+    def search_files(self, query):
+        try:
+            matches = find_files(query)
+            if not matches:
+                self.respond(f"Не нашёл файл с названием «{query}» в основных пользовательских папках.")
+                return
+            self.events.put(("log", "Найденные файлы:\n" + "\n".join(matches)))
+            self.respond(f"Нашёл {len(matches)} совпадение(й). Первый результат: {os.path.basename(matches[0])}. Полные пути записал в журнал.")
+        except Exception as exc:
+            self.events.put(("log", f"Поиск файла: {exc}"))
+            self.respond(str(exc) if isinstance(exc, ValueError) else "Не удалось выполнить поиск файла.")
+
+    def create_user_folder(self, name):
+        try:
+            path = create_folder(name)
+            self.events.put(("log", f"Создана папка: {path}"))
+            self.respond(f"Создал папку «{name}» в пользовательских документах.")
+        except FileExistsError:
+            self.respond("Такая папка уже существует. Выбери другое название.")
+        except Exception as exc:
+            self.events.put(("log", f"Создание папки: {exc}"))
+            self.respond(str(exc) if isinstance(exc, ValueError) else "Не удалось создать папку.")
+
+    def make_screenshot(self):
+        try:
+            path = take_screenshot()
+            self.events.put(("log", f"Скриншот сохранён локально: {path}"))
+            self.respond("Скриншот готов. Сохранил его в папку RobotTea-Screenshots внутри изображений.")
+        except Exception as exc:
+            self.events.put(("log", f"Скриншот: {exc}"))
+            self.respond("Не удалось сделать скриншот. Проверь доступ к экрану и свободное место.")
+
+    def show_system_report(self):
+        try:
+            report = system_report()
+            self.events.put(("log", "Состояние компьютера:\n" + report))
+            self.respond("Проверка компьютера завершена. Подробности записал в журнал.")
+        except Exception as exc:
+            self.events.put(("log", f"Информация о компьютере: {exc}"))
+            self.respond("Не удалось получить информацию о компьютере.")
 
     def open_website(self, address):
         """Open a user-requested website safely in the default browser."""
